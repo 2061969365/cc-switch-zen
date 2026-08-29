@@ -79,15 +79,8 @@ fn bootstrap_default_providers(db: &Database) -> Result<(), Box<dyn std::error::
     for app_type in &app_types {
         let existing = db.get_provider_by_id("opencode-zen", app_type)?;
         if existing.is_none() {
-            let mut custom_headers = HashMap::new();
-            custom_headers.insert("User-Agent".to_string(), "opencode/1.18.18".to_string());
-
             let mut meta = ProviderMeta::default();
             meta.api_format = Some("openai_chat".to_string());
-            meta.local_proxy_overrides = Some(cc_switch_lib::provider::LocalProxyRequestOverrides {
-                headers: custom_headers,
-                body: None,
-            });
 
             let settings_config = json!({
                 "env": {
