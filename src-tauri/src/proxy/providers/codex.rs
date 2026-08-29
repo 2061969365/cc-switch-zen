@@ -869,13 +869,39 @@ impl ProviderAdapter for CodexAdapter {
             return Ok(url.trim_end_matches('/').to_string());
         }
 
-        // 2. 尝试 baseURL
+        // 2. 尝试 baseURL（顶层）
         if let Some(url) = provider
             .settings_config
             .get("baseURL")
             .and_then(|v| v.as_str())
         {
             return Ok(url.trim_end_matches('/').to_string());
+        }
+
+        // 2b. 尝试 options.baseURL（opencode-zen 等使用此格式）
+        if let Some(url) = provider
+            .settings_config
+            .get("options")
+            .and_then(|o| o.get("baseURL"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(url.trim_end_matches('/').to_string());
+        }
+
+        // 2c. 尝试 env.ANTHROPIC_BASE_URL（与 claude adapter 对称）
+        if let Some(url) = provider
+            .settings_config
+            .get("env")
+            .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let trimmed = url.trim_end_matches('/');
+            // 回环检测：防止 Codex 也自我转发
+            if !trimmed.contains("127.0.0.1") && !trimmed.contains("localhost") {
+                return Ok(trimmed.to_string());
+            }
         }
 
         // 3. 尝试从 config 对象中获取
@@ -908,6 +934,7 @@ impl ProviderAdapter for CodexAdapter {
             "Codex Provider 缺少 base_url 配置".to_string(),
         ))
     }
+
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
         // xAI OAuth (Grok subscription): placeholder credentials only; the real

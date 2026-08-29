@@ -39,6 +39,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     proxy_config.listen_port = listen_port;
     proxy_config.listen_address = listen_address.clone();
 
+    // 5a. Initialize global HTTP client (read proxy from env: HTTP_PROXY / HTTPS_PROXY / ALL_PROXY)
+    let proxy_env = env::var("HTTP_PROXY")
+        .or_else(|_| env::var("HTTPS_PROXY"))
+        .or_else(|_| env::var("ALL_PROXY"))
+        .ok();
+    let proxy_url = proxy_env.as_deref().filter(|s| !s.is_empty());
+    if let Err(e) = cc_switch_lib::proxy::http_client::init(proxy_url) {
+        log::warn!("[Server] 全局 HTTP 客户端初始化失败: {e}，将使用系统代理回退");
+    } else {
+        log::info!("[Server] 全局 HTTP 客户端初始化: {}", proxy_url.unwrap_or("直连"));
+    }
+
     let server = ProxyServer::new(proxy_config, db.clone(), None);
 
     // 5. Start server
