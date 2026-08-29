@@ -3,8 +3,7 @@ use std::env;
 use std::sync::Arc;
 use cc_switch_lib::database::Database;
 use cc_switch_lib::provider::{Provider, ProviderMeta};
-use cc_switch_lib::proxy::types::ProxyConfig;
-use cc_switch_lib::proxy::server::ProxyServer;
+use cc_switch_lib::proxy::{ProxyConfig, ProxyServer};
 use serde_json::json;
 
 #[tokio::main]
