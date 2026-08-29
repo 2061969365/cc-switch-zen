@@ -102,7 +102,7 @@ impl Provider {
         self.meta.as_ref().and_then(|m| m.provider_type.as_deref())
     }
 
-    fn claude_base_url_contains(&self, needle: &str) -> bool {
+    pub fn claude_base_url_contains(&self, needle: &str) -> bool {
         self.settings_config
             .pointer("/env/ANTHROPIC_BASE_URL")
             .and_then(|value| value.as_str())
