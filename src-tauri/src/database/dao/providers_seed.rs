@@ -81,6 +81,15 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         // 空 config = 不写自定义模型表，Grok CLI 回落到自带的 xAI OAuth 登录
         settings_config_json: r#"{"config":""}"#,
     },
+    OfficialProviderSeed {
+        id: "opencode-zen",
+        app_type: AppType::Claude,
+        name: "OpenCode Zen",
+        website_url: "https://opencode.ai",
+        icon: "opencode",
+        icon_color: "#10A37F",
+        settings_config_json: r#"{"env":{"ANTHROPIC_BASE_URL":"https://opencode.ai/zen/v1","ANTHROPIC_AUTH_TOKEN":"not-needed","ANTHROPIC_DEFAULT_SONNET_MODEL":"mimo-v2.5-free","ANTHROPIC_DEFAULT_OPUS_MODEL":"muse-spark-1.2-contributor-free","ANTHROPIC_DEFAULT_HAIKU_MODEL":"hy3-free"}}"#,
+    },
 ];
 
 /// 判断给定的 provider id 是否属于内置官方种子。

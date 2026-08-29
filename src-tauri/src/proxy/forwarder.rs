@@ -2658,14 +2658,26 @@ impl RequestForwarder {
         body: &Value,
         is_copilot: bool,
     ) -> String {
+        let model = body.get("model").and_then(|value| value.as_str()).unwrap_or("");
+
+        // OpenCode Zen multi-model adaptive protocol routing
+        if provider.id == "opencode-zen" || provider.claude_base_url_contains("opencode.ai/zen") {
+            if model.starts_with("muse-spark") || model.contains("responses") {
+                return "openai_responses".to_string();
+            } else if model.starts_with("claude-") {
+                return "anthropic".to_string();
+            } else {
+                return "openai_chat".to_string();
+            }
+        }
+
         if !is_copilot {
             return super::providers::get_claude_api_format(provider).to_string();
         }
 
-        let model = body.get("model").and_then(|value| value.as_str());
-        if let Some(model_id) = model {
+        if !model.is_empty() {
             if self
-                .is_copilot_openai_vendor_model(provider, model_id)
+                .is_copilot_openai_vendor_model(provider, model)
                 .await
             {
                 return "openai_responses".to_string();
