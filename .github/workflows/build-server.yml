@@ -11,28 +11,14 @@ permissions:
   packages: write
 
 jobs:
-  build-binaries:
-    name: Build Binary (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary_name: cc-switch-server
-            output_name: cc-switch-server-linux-amd64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: cc-switch-server.exe
-            output_name: cc-switch-server-windows-amd64.exe
-
+  build-linux:
+    name: Build Linux Binary (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Linux Dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -46,7 +32,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-gnu
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -60,22 +46,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp src-tauri/target/release/${{ matrix.binary_name }} dist/${{ matrix.output_name }}
-          else
-            cp src-tauri/target/release/${{ matrix.binary_name }} dist/${{ matrix.output_name }}
-            chmod +x dist/${{ matrix.output_name }}
-          fi
+          cp src-tauri/target/release/cc-switch-server dist/cc-switch-server-linux-amd64
+          chmod +x dist/cc-switch-server-linux-amd64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output_name }}
-          path: dist/${{ matrix.output_name }}
+          name: cc-switch-server-linux-amd64
+          path: dist/cc-switch-server-linux-amd64
 
   build-docker:
     name: Build & Push Docker Image
-    needs: build-binaries
+    needs: build-linux
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -112,7 +94,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-binaries, build-docker]
+    needs: [build-linux, build-docker]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
     steps:
@@ -125,6 +107,5 @@ jobs:
         with:
           files: |
             cc-switch-server-linux-amd64/cc-switch-server-linux-amd64
-            cc-switch-server-windows-amd64.exe/cc-switch-server-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
