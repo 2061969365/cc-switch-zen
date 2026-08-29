@@ -77,42 +77,34 @@ fn bootstrap_default_providers(db: &Database) -> Result<(), Box<dyn std::error::
     let app_types = ["claude", "opencode", "codex"];
 
     for app_type in &app_types {
-        let existing = db.get_provider_by_id("opencode-zen", app_type)?;
-        if existing.is_none() {
-            let mut meta = ProviderMeta::default();
-            meta.api_format = Some("openai_chat".to_string());
+        let mut meta = ProviderMeta::default();
+        meta.api_format = Some("openai_chat".to_string());
 
-            let settings_config = json!({
-                "env": {
-                    "ANTHROPIC_BASE_URL": zen_base,
-                    "ANTHROPIC_AUTH_TOKEN": zen_api_key,
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-free",
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "muse-spark-1.2-contributor-free",
-                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "hy3-free"
-                },
-                "options": {
-                    "baseURL": zen_base,
-                    "apiKey": zen_api_key
-                }
-            });
+        let settings_config = json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": zen_base,
+                "ANTHROPIC_AUTH_TOKEN": zen_api_key,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-free",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "muse-spark-1.2-contributor-free",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "hy3-free"
+            },
+            "options": {
+                "baseURL": zen_base,
+                "apiKey": zen_api_key
+            }
+        });
 
-            let mut provider = Provider::with_id(
-                "opencode-zen".to_string(),
-                "OpenCode Zen (Auto Seeded)".to_string(),
-                settings_config,
-                Some("https://opencode.ai".to_string()),
-            );
-            provider.meta = Some(meta);
+        let mut provider = Provider::with_id(
+            "opencode-zen".to_string(),
+            "OpenCode Zen".to_string(),
+            settings_config,
+            Some("https://opencode.ai".to_string()),
+        );
+        provider.meta = Some(meta);
 
-            db.save_provider(app_type, &provider)?;
-            log::info!("已自动初始化 [{app_type}] 供应商: opencode-zen");
-        }
-
-        // Ensure active provider is set
-        if db.get_current_provider(app_type)?.is_none() {
-            let _ = db.set_current_provider(app_type, "opencode-zen");
-            log::info!("已自动激活 [{app_type}] 默认供应商: opencode-zen");
-        }
+        db.save_provider(app_type, &provider)?;
+        let _ = db.set_current_provider(app_type, "opencode-zen");
+        log::info!("已锁定 [{app_type}] 供应商: opencode-zen (上游: {zen_base})");
     }
 
     Ok(())

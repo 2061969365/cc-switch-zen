@@ -715,10 +715,26 @@ impl ProviderAdapter for ClaudeAdapter {
             return Ok(super::XAI_API_BASE_URL.to_string());
         }
 
+        // OpenCode Zen provider default upstream
+        if provider.id == "opencode-zen" {
+            if let Some(env) = provider.settings_config.get("env") {
+                if let Some(url) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
+                    let trimmed = url.trim_end_matches('/');
+                    if !trimmed.contains("127.0.0.1") && !trimmed.contains("localhost") {
+                        return Ok(trimmed.to_string());
+                    }
+                }
+            }
+            return Ok("https://opencode.ai/zen/v1".to_string());
+        }
+
         // 1. 从 env 中获取
         if let Some(env) = provider.settings_config.get("env") {
             if let Some(url) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
-                return Ok(url.trim_end_matches('/').to_string());
+                let trimmed = url.trim_end_matches('/');
+                if !trimmed.contains("127.0.0.1") && !trimmed.contains("localhost") {
+                    return Ok(trimmed.to_string());
+                }
             }
         }
 
@@ -728,7 +744,10 @@ impl ProviderAdapter for ClaudeAdapter {
             .get("base_url")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            let trimmed = url.trim_end_matches('/');
+            if !trimmed.contains("127.0.0.1") && !trimmed.contains("localhost") {
+                return Ok(trimmed.to_string());
+            }
         }
 
         if let Some(url) = provider
