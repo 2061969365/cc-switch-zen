@@ -42,8 +42,8 @@ fn default_non_streaming_timeout() -> u64 {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            listen_address: "127.0.0.1".to_string(),
-            listen_port: 15721, // 使用较少占用的高位端口
+            listen_address: "0.0.0.0".to_string(),
+            listen_port: 4096,
             max_retries: 3,
             request_timeout: 600,
             enable_logging: true,
