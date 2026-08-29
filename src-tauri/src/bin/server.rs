@@ -38,7 +38,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut proxy_config = ProxyConfig::default();
     proxy_config.listen_port = listen_port;
     proxy_config.listen_address = listen_address.clone();
-    proxy_config.auto_start = true;
 
     let server = ProxyServer::new(proxy_config, db.clone(), None);
 
@@ -85,7 +84,10 @@ fn bootstrap_default_providers(db: &Database) -> Result<(), Box<dyn std::error::
 
             let mut meta = ProviderMeta::default();
             meta.api_format = Some("openai_chat".to_string());
-            meta.custom_headers = custom_headers;
+            meta.local_proxy_overrides = Some(cc_switch_lib::provider::LocalProxyRequestOverrides {
+                headers: custom_headers,
+                body: None,
+            });
 
             let settings_config = json!({
                 "env": {
@@ -115,7 +117,7 @@ fn bootstrap_default_providers(db: &Database) -> Result<(), Box<dyn std::error::
 
         // Ensure active provider is set
         if db.get_current_provider(app_type)?.is_none() {
-            let _ = db.switch_provider(app_type, "opencode-zen");
+            let _ = db.set_current_provider(app_type, "opencode-zen");
             log::info!("已自动激活 [{app_type}] 默认供应商: opencode-zen");
         }
     }
