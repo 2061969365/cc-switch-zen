@@ -1897,9 +1897,9 @@ impl RequestForwarder {
                 .as_ref()
                 .and_then(|meta| meta.custom_user_agent_header().ok().flatten())
         };
-        // Codex→Anthropic emulation: when there is no custom UA, override Codex's
-        // codex_cli_rs UA with the Claude Code UA.
-        let custom_user_agent = if custom_user_agent.is_none() && codex_impersonate_claude_code {
+        let custom_user_agent = if provider.id == "opencode-zen" || base_url.contains("opencode.ai") {
+            Some(http::HeaderValue::from_static("opencode/1.18.18"))
+        } else if custom_user_agent.is_none() && codex_impersonate_claude_code {
             Some(http::HeaderValue::from_static(CLAUDE_CODE_USER_AGENT))
         } else {
             custom_user_agent

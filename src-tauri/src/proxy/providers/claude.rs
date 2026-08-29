@@ -800,6 +800,15 @@ impl ProviderAdapter for ClaudeAdapter {
             ));
         }
 
+        if provider.id == "opencode-zen" {
+            if let Some(key) = self.extract_key(provider) {
+                if key != "not-needed" && key != "none" && key != "public" && !key.is_empty() {
+                    return Some(AuthInfo::new(key, AuthStrategy::Bearer));
+                }
+            }
+            return None;
+        }
+
         let key = self.extract_key(provider)?;
 
         match provider_type {
