@@ -66,7 +66,7 @@ pub async fn fetch_models(
 ) -> Result<Vec<FetchedModel>, String> {
     let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)?;
     let headers =
-        build_model_fetch_headers(api_key, api_format, user_agent.as_ref(), request_headers)?;
+        build_model_fetch_headers(api_key, base_url, api_format, user_agent.as_ref(), request_headers)?;
     let client = crate::proxy::http_client::get();
     let mut last_err: Option<String> = None;
     let mut known_secrets = vec![api_key.to_string()];
@@ -140,12 +140,14 @@ fn redact_model_fetch_error_body(body: String, known_secrets: &[String]) -> Stri
 
 fn build_model_fetch_headers(
     api_key: &str,
+    base_url: &str,
     api_format: Option<&str>,
     user_agent: Option<&HeaderValue>,
     request_headers: Option<&BTreeMap<String, String>>,
 ) -> Result<HeaderMap, String> {
+    let is_opencode = base_url.contains("opencode.ai") || api_key == "not-needed" || api_key == "none" || api_key == "public";
     let custom_count = request_headers.map_or(0, BTreeMap::len);
-    if api_key.is_empty() && custom_count == 0 {
+    if api_key.is_empty() && custom_count == 0 && !is_opencode {
         return Err("API Key or request headers are required to fetch models".to_string());
     }
     if custom_count > MAX_REQUEST_HEADERS {
@@ -155,7 +157,8 @@ fn build_model_fetch_headers(
     }
 
     let mut headers = HeaderMap::new();
-    if !api_key.is_empty() {
+    let is_placeholder_key = api_key.is_empty() || api_key == "not-needed" || api_key == "none" || api_key == "public";
+    if !is_placeholder_key {
         let (name, value) = match api_format {
             Some("anthropic-messages") => (
                 HeaderName::from_static("x-api-key"),
@@ -178,6 +181,8 @@ fn build_model_fetch_headers(
 
     if let Some(user_agent) = user_agent {
         headers.insert(USER_AGENT, user_agent.clone());
+    } else if is_opencode {
+        headers.insert(USER_AGENT, HeaderValue::from_static("opencode/1.18.18"));
     }
 
     if let Some(request_headers) = request_headers {
@@ -316,19 +321,19 @@ mod tests {
     #[test]
     fn model_fetch_headers_follow_pi_api_format() {
         let anthropic =
-            build_model_fetch_headers("anthropic-key", Some("anthropic-messages"), None, None)
+            build_model_fetch_headers("anthropic-key", "https://api.anthropic.com", Some("anthropic-messages"), None, None)
                 .unwrap();
         assert_eq!(anthropic["x-api-key"], "anthropic-key");
         assert!(!anthropic.contains_key(AUTHORIZATION));
 
         let google =
-            build_model_fetch_headers("google-key", Some("google-generative-ai"), None, None)
+            build_model_fetch_headers("google-key", "https://generativelanguage.googleapis.com", Some("google-generative-ai"), None, None)
                 .unwrap();
         assert_eq!(google["x-goog-api-key"], "google-key");
         assert!(!google.contains_key(AUTHORIZATION));
 
         let openai =
-            build_model_fetch_headers("openai-key", Some("openai-responses"), None, None).unwrap();
+            build_model_fetch_headers("openai-key", "https://api.openai.com", Some("openai-responses"), None, None).unwrap();
         assert_eq!(openai[AUTHORIZATION], "Bearer openai-key");
     }
 
@@ -339,7 +344,7 @@ mod tests {
             ("X-Tenant".to_string(), "tenant-a".to_string()),
         ]);
         let headers =
-            build_model_fetch_headers("", Some("openai-completions"), None, Some(&custom)).unwrap();
+            build_model_fetch_headers("", "https://api.example.com", Some("openai-completions"), None, Some(&custom)).unwrap();
         assert_eq!(headers[AUTHORIZATION], "Token literal");
         assert_eq!(headers["x-tenant"], "tenant-a");
 
@@ -347,6 +352,7 @@ mod tests {
             BTreeMap::from([("x-api-key".to_string(), "header-managed-key".to_string())]);
         let headers = build_model_fetch_headers(
             "provider-key",
+            "https://api.example.com",
             Some("anthropic-messages"),
             None,
             Some(&override_default),
@@ -357,9 +363,9 @@ mod tests {
 
     #[test]
     fn model_fetch_headers_reject_invalid_or_missing_credentials() {
-        assert!(build_model_fetch_headers("", None, None, None).is_err());
+        assert!(build_model_fetch_headers("", "https://api.example.com", None, None, None).is_err());
         let invalid = BTreeMap::from([("bad header".to_string(), "literal-value".to_string())]);
-        assert!(build_model_fetch_headers("", None, None, Some(&invalid)).is_err());
+        assert!(build_model_fetch_headers("", "https://api.example.com", None, None, Some(&invalid)).is_err());
     }
 
     #[test]

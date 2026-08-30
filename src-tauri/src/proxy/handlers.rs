@@ -104,12 +104,26 @@ pub async fn handle_models() -> Result<Json<Value>, ProxyError> {
             }
         }
     } else {
-        if active_catalog_path.is_none() {
-            log::debug!(
-                "[models] stale guard: catalog not served (model_catalog_json not set to cc-switch catalog)"
-            );
+        // 本地没有静态 catalog，尝试从 OpenCode Zen 上游拉取真实可用模型列表
+        let client = crate::proxy::http_client::get();
+        let upstream_url = "https://opencode.ai/zen/v1/models";
+        let fetch_result = client
+            .get(upstream_url)
+            .header(reqwest::header::USER_AGENT, "opencode/1.18.18")
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+
+        match fetch_result {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(data) = resp.json::<Value>().await {
+                    data
+                } else {
+                    json!({"models": []})
+                }
+            }
+            _ => json!({"models": []}),
         }
-        json!({"models": []})
     };
     Ok(Json(catalog))
 }
