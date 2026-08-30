@@ -937,6 +937,15 @@ impl ProviderAdapter for CodexAdapter {
 
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        if provider.id == "opencode-zen" {
+            if let Some(key) = self.extract_key(provider) {
+                if key != "not-needed" && key != "none" && key != "public" && !key.is_empty() {
+                    return Some(AuthInfo::new(key, AuthStrategy::Bearer));
+                }
+            }
+            return None;
+        }
+
         // xAI OAuth (Grok subscription): placeholder credentials only; the real
         // access_token is resolved per-request by the forwarder via XaiOAuthManager.
         if provider.is_xai_oauth() {

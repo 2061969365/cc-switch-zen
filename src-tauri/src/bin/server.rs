@@ -90,7 +90,11 @@ fn bootstrap_default_providers(db: &Database) -> Result<(), Box<dyn std::error::
 
     for app_type in &app_types {
         let mut meta = ProviderMeta::default();
-        meta.api_format = Some("openai_chat".to_string());
+        if *app_type == "codex" {
+            meta.api_format = Some("openai_responses".to_string());
+        } else {
+            meta.api_format = Some("openai_chat".to_string());
+        }
 
         let settings_config = json!({
             "env": {
