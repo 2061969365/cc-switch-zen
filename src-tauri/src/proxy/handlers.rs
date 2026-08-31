@@ -1738,7 +1738,7 @@ async fn handle_codex_responses_to_chat_transform(
 
     if response.is_sse() || (is_stream && !response.is_json()) {
         let stream = response.bytes_stream();
-        let sse_stream = streaming_responses::create_openai_chat_sse_stream_from_responses(
+        let sse_stream = super::providers::streaming_responses::create_openai_chat_sse_stream_from_responses(
             stream,
             ctx.outbound_model.clone().or_else(|| Some(ctx.request_model.clone())),
         );

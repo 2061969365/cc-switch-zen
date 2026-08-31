@@ -4590,12 +4590,7 @@ pub fn create_openai_chat_sse_stream_from_responses<E: std::error::Error + Send 
                 }
             };
 
-            let (decoded_chunk, remainder) = crate::proxy::sse::decode_utf8_lossy_with_remainder(
-                &utf8_remainder,
-                chunk.as_ref(),
-            );
-            utf8_remainder = remainder;
-            buffer.push_str(&decoded_chunk);
+            crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, chunk.as_ref());
 
             while let Some(block) = take_sse_block(&mut buffer) {
                 let mut event_type: Option<String> = None;
