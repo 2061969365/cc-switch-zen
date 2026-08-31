@@ -827,7 +827,7 @@ pub async fn handle_chat_completions(
     ctx.provider = result.provider;
     let response = result.response;
 
-    if super::providers::should_convert_codex_chat_to_responses(&ctx.provider, &endpoint) {
+    if super::providers::should_convert_codex_chat_to_responses(&ctx.provider, &endpoint, Some(&ctx.request_model)) {
         return handle_codex_responses_to_chat_transform(
             response,
             &ctx,

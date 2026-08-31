@@ -228,15 +228,27 @@ pub fn codex_provider_uses_responses(provider: &Provider) -> bool {
     false
 }
 
-pub fn should_convert_codex_chat_to_responses(provider: &Provider, endpoint: &str) -> bool {
+pub fn should_convert_codex_chat_to_responses(provider: &Provider, endpoint: &str, model: Option<&str>) -> bool {
     let path = endpoint
         .split_once('?')
         .map_or(endpoint, |(path, _query)| path);
 
-    matches!(
+    let is_chat_path = matches!(
         path,
         "/chat/completions" | "/v1/chat/completions" | "/v1/v1/chat/completions" | "/codex/v1/chat/completions"
-    ) && codex_provider_uses_responses(provider)
+    );
+
+    if !is_chat_path {
+        return false;
+    }
+
+    if let Some(m) = model {
+        if m.starts_with("muse-spark") {
+            return true;
+        }
+    }
+
+    codex_provider_uses_responses(provider)
 }
 
 pub fn should_convert_codex_responses_to_anthropic(provider: &Provider, endpoint: &str) -> bool {

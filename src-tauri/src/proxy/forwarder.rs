@@ -1195,8 +1195,9 @@ impl RequestForwarder {
         // catalog matching and to the transform's own strip+beta detection).
         let codex_responses_to_chat = matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
+        let req_model = mapped_body.get("model").and_then(|m| m.as_str());
         let codex_chat_to_responses = matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && super::providers::should_convert_codex_chat_to_responses(provider, endpoint);
+            && super::providers::should_convert_codex_chat_to_responses(provider, endpoint, req_model);
         let codex_responses_to_anthropic = matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && super::providers::should_convert_codex_responses_to_anthropic(provider, endpoint);
         let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
