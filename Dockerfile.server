@@ -1,9 +1,9 @@
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
-    libgtk-3-0 \
+    libgtk-3-0t64 \
     libwebkit2gtk-4.1-0 \
     libayatana-appindicator3-1 \
     librsvg2-2 \
