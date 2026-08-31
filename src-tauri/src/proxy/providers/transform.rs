@@ -746,6 +746,251 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
     Ok(result)
 }
 
+/// 将 OpenAI Chat Completions 请求体转换为 OpenAI Responses 请求体
+pub fn openai_chat_to_responses(body: Value) -> Result<Value, ProxyError> {
+    let mut result = json!({});
+
+    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
+        result["model"] = json!(model);
+    }
+
+    let mut instructions_parts = Vec::new();
+    let mut input = Vec::new();
+
+    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
+        for msg in messages {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+            let content = msg.get("content");
+
+            if role == "system" {
+                if let Some(text) = content.and_then(|c| c.as_str()) {
+                    if !text.is_empty() {
+                        instructions_parts.push(text.to_string());
+                    }
+                } else if let Some(arr) = content.and_then(|c| c.as_array()) {
+                    for part in arr {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                instructions_parts.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if role == "user" {
+                if let Some(text) = content.and_then(|c| c.as_str()) {
+                    input.push(json!({
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": text }]
+                    }));
+                } else if let Some(arr) = content.and_then(|c| c.as_array()) {
+                    let mut user_content = Vec::new();
+                    for part in arr {
+                        let ptype = part.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+                        if ptype == "text" || ptype == "input_text" {
+                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                user_content.push(json!({ "type": "input_text", "text": text }));
+                            }
+                        } else if ptype == "image_url" {
+                            if let Some(url) = part.pointer("/image_url/url").and_then(|u| u.as_str()) {
+                                user_content.push(json!({ "type": "input_image", "image_url": url }));
+                            }
+                        }
+                    }
+                    if !user_content.is_empty() {
+                        input.push(json!({
+                            "role": "user",
+                            "content": user_content
+                        }));
+                    }
+                }
+            } else if role == "assistant" {
+                let mut assistant_content = Vec::new();
+                if let Some(text) = content.and_then(|c| c.as_str()) {
+                    if !text.is_empty() {
+                        assistant_content.push(json!({ "type": "output_text", "text": text }));
+                    }
+                }
+                if !assistant_content.is_empty() {
+                    input.push(json!({
+                        "role": "assistant",
+                        "content": assistant_content
+                    }));
+                }
+
+                if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+                    for tc in tool_calls {
+                        let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        let func = tc.get("function").cloned().unwrap_or(json!({}));
+                        let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        let args_str = func.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                        input.push(json!({
+                            "type": "function_call",
+                            "call_id": id,
+                            "name": name,
+                            "arguments": args_str
+                        }));
+                    }
+                }
+            } else if role == "tool" {
+                let tool_call_id = msg.get("tool_call_id").and_then(|id| id.as_str()).unwrap_or("");
+                let text = if let Some(s) = content.and_then(|c| c.as_str()) {
+                    s.to_string()
+                } else if let Some(c) = content {
+                    canonical_json_string(c)
+                } else {
+                    String::new()
+                };
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": text
+                }));
+            }
+        }
+    }
+
+    if !instructions_parts.is_empty() {
+        result["instructions"] = json!(instructions_parts.join("\n\n"));
+    }
+    result["input"] = json!(input);
+
+    if let Some(v) = body.get("max_tokens").or_else(|| body.get("max_completion_tokens")) {
+        result["max_output_tokens"] = v.clone();
+    }
+    if let Some(v) = body.get("temperature") {
+        result["temperature"] = v.clone();
+    }
+    if let Some(v) = body.get("top_p") {
+        result["top_p"] = v.clone();
+    }
+    if let Some(v) = body.get("stream") {
+        result["stream"] = v.clone();
+    }
+
+    // 转换 tools
+    if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
+        let mut response_tools = Vec::new();
+        for tool in tools {
+            let func = tool.get("function").cloned().unwrap_or(json!({}));
+            let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let desc = func.get("description").and_then(|d| d.as_str()).unwrap_or("");
+            let params = func.get("parameters").cloned().unwrap_or(json!({ "type": "object", "properties": {} }));
+            response_tools.push(json!({
+                "type": "function",
+                "name": name,
+                "description": desc,
+                "parameters": clean_schema(params)
+            }));
+        }
+        if !response_tools.is_empty() {
+            result["tools"] = json!(response_tools);
+        }
+    }
+
+    Ok(result)
+}
+
+/// 将 OpenAI Responses 响应体转换回 OpenAI Chat Completions 响应体
+pub fn responses_to_openai_chat(body: Value) -> Result<Value, ProxyError> {
+    let id = body.get("id").and_then(|i| i.as_str()).unwrap_or_else(|| "chatcmpl-resp");
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    let created = body.get("created_at").and_then(|c| c.as_u64()).unwrap_or_else(|| 1700000000);
+
+    let output = body.get("output").and_then(|o| o.as_array()).cloned().unwrap_or_default();
+
+    let mut text_content = String::new();
+    let mut reasoning_content = String::new();
+    let mut tool_calls = Vec::new();
+
+    for item in &output {
+        let itype = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if itype == "message" {
+            if let Some(contents) = item.get("content").and_then(|c| c.as_array()) {
+                for c in contents {
+                    let ctype = c.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if ctype == "output_text" || ctype == "text" {
+                        if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                            text_content.push_str(t);
+                        }
+                    } else if ctype == "reasoning" || ctype == "thinking" {
+                        if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                            reasoning_content.push_str(t);
+                        }
+                    }
+                }
+            }
+        } else if itype == "function_call" {
+            let call_id = item.get("call_id").or_else(|| item.get("id")).and_then(|i| i.as_str()).unwrap_or("");
+            let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+            tool_calls.push(json!({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments
+                }
+            }));
+        }
+    }
+
+    let finish_reason = if !tool_calls.is_empty() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+
+    let mut message = json!({
+        "role": "assistant"
+    });
+    if !text_content.is_empty() || tool_calls.is_empty() {
+        message["content"] = json!(text_content);
+    } else {
+        message["content"] = Value::Null;
+    }
+    if !reasoning_content.is_empty() {
+        message["reasoning_content"] = json!(reasoning_content);
+    }
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = json!(tool_calls);
+    }
+
+    let usage = body.get("usage").cloned().unwrap_or_else(|| {
+        json!({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        })
+    });
+    let prompt_tokens = usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let completion_tokens = usage.get("output_tokens").or_else(|| usage.get("completion_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_tokens = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(prompt_tokens + completion_tokens);
+
+    let result = json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens
+        }
+    });
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1725,6 +1970,56 @@ mod tests {
         assert_eq!(result["content"][0]["text"], "Hello");
         assert_eq!(result["content"][1]["type"], "text");
         assert_eq!(result["content"][1]["text"], "I can't do that");
+    }
+
+    #[test]
+    fn test_openai_chat_to_responses() {
+        let input = json!({
+            "model": "muse-spark-1.2-contributor-free",
+            "messages": [
+                {"role": "system", "content": "You are an assistant"},
+                {"role": "user", "content": "Hello"}
+            ],
+            "max_tokens": 100,
+            "stream": true
+        });
+        let result = openai_chat_to_responses(input).unwrap();
+        assert_eq!(result["model"], "muse-spark-1.2-contributor-free");
+        assert_eq!(result["instructions"], "You are an assistant");
+        assert_eq!(result["input"][0]["role"], "user");
+        assert_eq!(result["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(result["input"][0]["content"][0]["text"], "Hello");
+        assert_eq!(result["max_output_tokens"], 100);
+        assert_eq!(result["stream"], true);
+    }
+
+    #[test]
+    fn test_responses_to_openai_chat() {
+        let input = json!({
+            "id": "resp_123",
+            "model": "muse-spark-1.2-contributor-free",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Hi there!"}
+                    ]
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+        let result = responses_to_openai_chat(input).unwrap();
+        assert_eq!(result["id"], "resp_123");
+        assert_eq!(result["object"], "chat.completion");
+        assert_eq!(result["choices"][0]["message"]["content"], "Hi there!");
+        assert_eq!(result["usage"]["prompt_tokens"], 10);
+        assert_eq!(result["usage"]["completion_tokens"], 5);
     }
 
     #[test]

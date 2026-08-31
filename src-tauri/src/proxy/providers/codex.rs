@@ -195,6 +195,50 @@ pub fn codex_provider_uses_anthropic(provider: &Provider) -> bool {
         .unwrap_or(false)
 }
 
+pub fn codex_provider_uses_responses(provider: &Provider) -> bool {
+    if let Some(api_format) = provider
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.api_format.as_deref())
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("api_format")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            provider
+                .settings_config
+                .get("apiFormat")
+                .and_then(|v| v.as_str())
+        })
+    {
+        return is_responses_wire_api(api_format);
+    }
+
+    if let Some(wire_api) = provider
+        .settings_config
+        .get("config")
+        .and_then(|v| v.as_str())
+        .and_then(extract_codex_wire_api_from_toml)
+    {
+        return is_responses_wire_api(&wire_api);
+    }
+
+    false
+}
+
+pub fn should_convert_codex_chat_to_responses(provider: &Provider, endpoint: &str) -> bool {
+    let path = endpoint
+        .split_once('?')
+        .map_or(endpoint, |(path, _query)| path);
+
+    matches!(
+        path,
+        "/chat/completions" | "/v1/chat/completions" | "/v1/v1/chat/completions" | "/codex/v1/chat/completions"
+    ) && codex_provider_uses_responses(provider)
+}
+
 pub fn should_convert_codex_responses_to_anthropic(provider: &Provider, endpoint: &str) -> bool {
     let path = endpoint
         .split_once('?')
@@ -709,6 +753,13 @@ fn is_anthropic_wire_api(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "anthropic" | "anthropic_messages" | "anthropic-messages" | "claude" | "messages"
+    )
+}
+
+fn is_responses_wire_api(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "responses" | "openai_responses" | "openai-responses" | "response"
     )
 }
 

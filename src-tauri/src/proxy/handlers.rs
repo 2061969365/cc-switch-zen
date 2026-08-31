@@ -827,6 +827,17 @@ pub async fn handle_chat_completions(
     ctx.provider = result.provider;
     let response = result.response;
 
+    if super::providers::should_convert_codex_chat_to_responses(&ctx.provider, &endpoint) {
+        return handle_codex_responses_to_chat_transform(
+            response,
+            &ctx,
+            &state,
+            is_stream,
+            connection_guard,
+        )
+        .await;
+    }
+
     process_response(
         response,
         &ctx,
@@ -1709,6 +1720,213 @@ async fn handle_codex_anthropic_to_responses_transform(
             log::error!("[Codex] Failed to build Responses response: {e}");
             ProxyError::Internal(format!("Failed to build response: {e}"))
         })
+}
+
+/// Response-transform handler for OpenAI Chat Completions clients calling a Responses upstream.
+async fn handle_codex_responses_to_chat_transform(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    is_stream: bool,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> Result<axum::response::Response, ProxyError> {
+    let status = response.status();
+
+    if !status.is_success() {
+        return handle_codex_chat_error_response(response, ctx, status).await;
+    }
+
+    if response.is_sse() || (is_stream && !response.is_json()) {
+        let stream = response.bytes_stream();
+        let sse_stream = streaming_responses::create_openai_chat_sse_stream_from_responses(
+            stream,
+            ctx.outbound_model.clone().or_else(|| Some(ctx.request_model.clone())),
+        );
+        return build_codex_chat_sse_response(
+            sse_stream,
+            ctx,
+            state,
+            status,
+            connection_guard,
+        );
+    }
+
+    let body_timeout =
+        if ctx.app_config.auto_failover_enabled && ctx.app_config.non_streaming_timeout > 0 {
+            std::time::Duration::from_secs(ctx.app_config.non_streaming_timeout as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+    let (mut response_headers, status, body_bytes) =
+        read_decoded_body(response, ctx.tag, body_timeout).await?;
+    let responses_response: Value = match serde_json::from_slice(&body_bytes) {
+        Ok(value) => value,
+        Err(e) => {
+            log::error!(
+                "[Codex] Failed to parse Responses upstream response: {e}, body_bytes={}",
+                body_bytes.len()
+            );
+            return Err(upstream_body_parse_error(
+                "Failed to parse upstream responses response",
+                &e,
+                &response_headers,
+                &String::from_utf8_lossy(&body_bytes),
+            ));
+        }
+    };
+
+    let chat_response = super::providers::transform::responses_to_openai_chat(responses_response)?;
+
+    let _connection_guard = connection_guard;
+    if let Some(usage) = TokenUsage::from_openai_response(&chat_response) {
+        let model = chat_response
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .or_else(|| ctx.outbound_model.clone())
+            .unwrap_or_else(|| ctx.request_model.clone());
+        let request_model = ctx.request_model.clone();
+        let outbound_model = ctx
+            .outbound_model
+            .clone()
+            .unwrap_or_else(|| ctx.request_model.clone());
+        let app_type_str = ctx.app_type_str;
+        tokio::spawn({
+            let state = state.clone();
+            let provider_id = ctx.provider.id.clone();
+            let session_id = ctx.session_id.clone();
+            let latency_ms = ctx.latency_ms();
+            async move {
+                log_usage(
+                    &state,
+                    &provider_id,
+                    app_type_str,
+                    &model,
+                    &request_model,
+                    &outbound_model,
+                    usage,
+                    latency_ms,
+                    None,
+                    false,
+                    status.as_u16(),
+                    Some(session_id),
+                )
+                .await;
+            }
+        });
+    }
+
+    strip_entity_headers_for_rebuilt_body(&mut response_headers);
+    strip_hop_by_hop_response_headers(&mut response_headers);
+    response_headers.remove(axum::http::header::CONTENT_TYPE);
+
+    let mut builder = axum::response::Response::builder().status(status);
+    for (key, value) in response_headers.iter() {
+        builder = builder.header(key, value);
+    }
+    builder = builder.header(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+
+    let response_body = serde_json::to_vec(&chat_response).map_err(|e| {
+        log::error!("[Codex] Failed to serialize Chat response: {e}");
+        ProxyError::TransformError(format!("Failed to serialize chat response: {e}"))
+    })?;
+
+    builder
+        .body(axum::body::Body::from(response_body))
+        .map_err(|e| {
+            log::error!("[Codex] Failed to build Chat response: {e}");
+            ProxyError::Internal(format!("Failed to build response: {e}"))
+        })
+}
+
+fn build_codex_chat_sse_response(
+    sse_stream: impl futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    status: StatusCode,
+    connection_guard: Option<ActiveConnectionGuard>,
+) -> Result<axum::response::Response, ProxyError> {
+    let usage_collector = if usage_logging_enabled(state) {
+        let state = state.clone();
+        let provider_id = ctx.provider.id.clone();
+        let request_model = ctx.request_model.clone();
+        let fallback_model = ctx
+            .outbound_model
+            .clone()
+            .unwrap_or_else(|| ctx.request_model.clone());
+        let app_type_str = ctx.app_type_str;
+        let start_time = ctx.start_time;
+        let session_id = ctx.session_id.clone();
+
+        Some(SseUsageCollector::new(
+            start_time,
+            Some(codex_stream_usage_event_filter),
+            move |events, first_token_ms| {
+                let usage = TokenUsage::from_openai_stream_events(&events).unwrap_or_default();
+                if !usage.has_billable_tokens() {
+                    log::debug!("[Codex] Chat streaming response usage is all-zero or missing, skipping usage recording");
+                    return;
+                }
+                let model = usage
+                    .model
+                    .clone()
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| fallback_model.clone());
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let request_model = request_model.clone();
+                let outbound_model = fallback_model.clone();
+                let session_id = session_id.clone();
+
+                tokio::spawn(async move {
+                    log_usage(
+                        &state,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        &outbound_model,
+                        usage,
+                        latency_ms,
+                        first_token_ms,
+                        true,
+                        status.as_u16(),
+                        Some(session_id),
+                    )
+                    .await;
+                });
+            },
+        ))
+    } else {
+        None
+    };
+
+    let logged_stream = create_logged_passthrough_stream(
+        sse_stream,
+        ctx.tag,
+        usage_collector,
+        ctx.streaming_timeout_config(),
+        connection_guard,
+    );
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        "Cache-Control",
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+
+    let body = axum::body::Body::from_stream(logged_stream);
+    Ok((headers, body).into_response())
 }
 
 fn build_codex_anthropic_sse_response(

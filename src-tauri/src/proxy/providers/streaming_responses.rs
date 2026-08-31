@@ -4566,6 +4566,203 @@ fn create_anthropic_sse_stream_from_responses_raw<E: std::error::Error + Send + 
     }
 }
 
+/// 创建从 OpenAI Responses API SSE 到 OpenAI Chat Completions SSE 的转换流
+pub fn create_openai_chat_sse_stream_from_responses<E: std::error::Error + Send + 'static>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+    original_model: Option<String>,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    async_stream::stream! {
+        let mut buffer = String::new();
+        let mut utf8_remainder: Vec<u8> = Vec::new();
+        let fallback_model = original_model.unwrap_or_else(|| "openai".to_string());
+        let mut current_model = fallback_model.clone();
+        let mut tool_calls_map: HashMap<String, (usize, String, String)> = HashMap::new(); // key -> (index, id, name)
+        let mut next_tool_index = 0;
+
+        let mut stream = std::pin::pin!(stream);
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("[Chat/Responses] SSE stream read error: {e}");
+                    break;
+                }
+            };
+
+            let (decoded_chunk, remainder) = crate::proxy::sse::decode_utf8_lossy_with_remainder(
+                &utf8_remainder,
+                chunk.as_ref(),
+            );
+            utf8_remainder = remainder;
+            buffer.push_str(&decoded_chunk);
+
+            while let Some(block) = take_sse_block(&mut buffer) {
+                let mut event_type: Option<String> = None;
+                let mut data_parts: Vec<String> = Vec::new();
+
+                for line in block.lines() {
+                    if let Some(event) = strip_sse_field(line, "event") {
+                        event_type = Some(event.trim().to_string());
+                    } else if let Some(data) = strip_sse_field(line, "data") {
+                        data_parts.push(data.to_string());
+                    }
+                }
+
+                if data_parts.is_empty() {
+                    continue;
+                }
+
+                let data_str = data_parts.join("\n");
+                if data_str.trim() == "[DONE]" {
+                    continue;
+                }
+
+                let data: Value = match serde_json::from_str(&data_str) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let event_name = event_type
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| data.get("type").and_then(Value::as_str))
+                    .unwrap_or("");
+
+                match event_name {
+                    "response.created" => {
+                        let response_obj = response_object_from_event(&data);
+                        if let Some(m) = response_obj.get("model").and_then(Value::as_str) {
+                            if !m.is_empty() {
+                                current_model = m.to_string();
+                            }
+                        }
+                    }
+                    "response.output_text.delta" => {
+                        if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                            let chunk_json = json!({
+                                "id": data.get("item_id").and_then(Value::as_str).unwrap_or("chatcmpl-resp"),
+                                "object": "chat.completion.chunk",
+                                "created": 1700000000,
+                                "model": current_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": { "content": delta },
+                                    "finish_reason": null
+                                }]
+                            });
+                            yield Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&chunk_json).unwrap_or_default())));
+                        }
+                    }
+                    "response.output_item.added" => {
+                        if let Some(item) = data.get("item") {
+                            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                                let idx = data.get("output_index").and_then(Value::as_u64).map(|u| u as usize).unwrap_or(next_tool_index);
+                                next_tool_index = next_tool_index.max(idx + 1);
+                                let item_id = item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                                let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or(&item_id).to_string();
+                                let name = item.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+
+                                tool_calls_map.insert(item_id.clone(), (idx, call_id.clone(), name.clone()));
+                                if !call_id.is_empty() && call_id != item_id {
+                                    tool_calls_map.insert(call_id.clone(), (idx, call_id.clone(), name.clone()));
+                                }
+
+                                let chunk_json = json!({
+                                    "id": item_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": 1700000000,
+                                    "model": current_model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {
+                                            "tool_calls": [{
+                                                "index": idx,
+                                                "id": call_id,
+                                                "type": "function",
+                                                "function": {
+                                                    "name": name,
+                                                    "arguments": ""
+                                                }
+                                            }]
+                                        },
+                                        "finish_reason": null
+                                    }]
+                                });
+                                yield Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&chunk_json).unwrap_or_default())));
+                            }
+                        }
+                    }
+                    "response.function_call_arguments.delta" => {
+                        if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                            let item_id = data.get("item_id").and_then(Value::as_str).unwrap_or("");
+                            let tool_info = tool_calls_map.get(item_id).cloned().or_else(|| {
+                                data.get("output_index").and_then(Value::as_u64).and_then(|out_idx| {
+                                    tool_calls_map.values().find(|(idx, _, _)| *idx == out_idx as usize).cloned()
+                                })
+                            });
+
+                            let (idx, _, _) = tool_info.unwrap_or((0, String::new(), String::new()));
+                            let chunk_json = json!({
+                                "id": item_id,
+                                "object": "chat.completion.chunk",
+                                "created": 1700000000,
+                                "model": current_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [{
+                                            "index": idx,
+                                            "function": {
+                                                "arguments": delta
+                                            }
+                                        }]
+                                    },
+                                    "finish_reason": null
+                                }]
+                            });
+                            yield Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&chunk_json).unwrap_or_default())));
+                        }
+                    }
+                    "response.completed" | "response.incomplete" => {
+                        let response_obj = response_object_from_event(&data);
+                        let usage = response_obj.get("usage").cloned().unwrap_or_else(|| json!({}));
+                        let prompt_tokens = usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).and_then(Value::as_u64).unwrap_or(0);
+                        let completion_tokens = usage.get("output_tokens").or_else(|| usage.get("completion_tokens")).and_then(Value::as_u64).unwrap_or(0);
+                        let total_tokens = usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(prompt_tokens + completion_tokens);
+
+                        let finish_reason = if !tool_calls_map.is_empty() {
+                            "tool_calls"
+                        } else {
+                            "stop"
+                        };
+
+                        let chunk_json = json!({
+                            "id": response_obj.get("id").and_then(Value::as_str).unwrap_or("chatcmpl-resp"),
+                            "object": "chat.completion.chunk",
+                            "created": 1700000000,
+                            "model": current_model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": finish_reason
+                            }],
+                            "usage": {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": total_tokens
+                            }
+                        });
+                        yield Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&chunk_json).unwrap_or_default())));
+                        yield Ok(Bytes::from("data: [DONE]\n\n"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
